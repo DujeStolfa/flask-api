@@ -1,48 +1,58 @@
-import flask
-from flask import request, jsonify
+""" API za predviđanje budućih transakcija korisnika """
 
-app = flask.Flask(__name__)
-app.config["DEBUG"] = True
+import math
 
-books = [
-    {
-        "id": 0,
-        "title": "A Fire Upon the Deep",
-        "author": "Vernor Vinge",
-        "first_sentence": "The coldsleep itself was dreamless.",
-        "year_published": "1992",
-    },
-    {
-        "id": 1,
-        "title": "The Ones Who Walk Away From Omelas",
-        "author": "Ursula K. Le Guin",
-        "first_sentence": "With a clamor of bells that set the swallows soaring, the Festival of Summer came to the city Omelas, bright-towered by the sea.",
-        "published": "1973",
-    },
-    {
-        "id": 2,
-        "title": "Dhalgren",
-        "author": "Samuel R. Delany",
-        "first_sentence": "to wound the autumnal city.",
-        "published": "1975",
-    },
-]
+import numpy as np
+import pandas as pd
+from flask import request, Flask
+from sklearn import preprocessing
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+
+app = Flask(__name__)
 
 
-@app.route("/", methods=["GET"])
-def home():
-    return "<h1>Distant Reading Archive</h1><p>This site is a prototype API for distant reading of science fiction novels.</p>"
+@app.route("/api", methods=["POST"])
+def predict_data():
+    """ Ruta za pristup API-ju """
 
-
-@app.route("/api/v1/resources/books/all", methods=["GET"])
-def api_all():
-    return jsonify(books)
-
-
-@app.route("/api/v1/tasks", methods=["POST"])
-def create_task():
     req = request.get_json()
-    return req["tko je"], 201
 
+    # Obrada JSON objekta
+    df = pd.DataFrame(
+        {"Total": np.array(req["Total"]), "Change": np.array(req["Change"])}
+    )
 
-app.run()
+    # Izračun percentilne volatilnosti promjene salda
+    df["PCT_change"] = df["Change"] / df["Total"] * 100
+    predict_column = "Total"
+
+    # Generiranje stupca sa oznakama
+    predict_shift = int(math.ceil(0.08 * len(df)))
+    df["label"] = df[predict_column].shift(-predict_shift)
+
+    X = np.array(df.drop(["label"], 1))
+    X = preprocessing.scale(X)
+    X_recent = X[:predict_shift]
+    X = X[:-predict_shift]
+
+    df.dropna(inplace=True)
+    y = np.array(df["label"])
+
+    # Odvajanje podataka za treniranje i testiranje
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    clf = LinearRegression()
+    clf.fit(X_train, y_train)
+    confidence = clf.score(X_test, y_test)
+
+    prediction_set = clf.predict(X_recent)
+    if math.isnan(confidence):
+        confidence = -9999
+
+    result = {
+        "prediction": list(prediction_set),
+        "confidence": float(confidence),
+        "prediction_shift": predict_shift,
+    }
+
+    return result, 201
